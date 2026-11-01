@@ -4,6 +4,8 @@
 
 2026-11-01 저녁 로봇(Jetson)의 `~/mecanum_slam_ws`에 올라가 있던 판을 그대로 옮겼고, 로그와 녹화, 백업은 뺐다. 옮긴 파일의 md5는 `MANIFEST_robot_md5.txt`에 있다. `README.md`, `.gitignore`, `start_station.sh`, `MANIFEST_robot_md5.txt`는 이 저장소를 만들면서 추가한 파일이다.
 
+대회 주행에 안 쓰는 지도 작성 파일과 카메라 캘리브레이션 도구 같은 보조 도구는 뺐다. 필요하면 첫 커밋(8f68d61)에서 꺼내 쓴다. 지도 작성 파일을 빼면서 `src/mecanum_slam`의 `CMakeLists.txt`와 `package.xml`만 고쳤고, 이 둘을 뺀 나머지는 로봇 파일과 같다.
+
 ## 필요한 것
 
 Jetson Orin Nano, Ubuntu 22.04, ROS 2 Humble 기준이다. Python 패키지는 numpy 2.2.6, opencv 4.13.0, shapely 2.1.1을 쓰고 있고, `screen`과 `rmw_cyclonedds_cpp`가 있어야 한다.
@@ -33,9 +35,11 @@ colcon build
 기반과 잡기 스테이션을 먼저 켜 둔다. `field_compete.sh`는 잡기 스테이션을 켜 주지 않으므로, 이걸 빠뜨리면 큐브 앞까지 간 뒤 잡기에 실패하고 임무가 멈춘다.
 
 ```bash
-~/mecanum_slam_ws/field_base.sh
+MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_base.sh
 ~/mecanum_slam_ws/start_station.sh
 ```
+
+`MISSION_DIR`을 빼면 없는 옛 위치추정 경로를 찾아서 기반이 켜지지 않는다. 시험 실행 명령도 마찬가지다.
 
 로봇을 출발 칸 가운데에 놓고 아래 명령을 실행하면 키 입력 없이 바로 출발한다. 인자는 출발 칸 옆 바깥벽이 로봇의 어느 쪽인지를 뜻한다.
 
@@ -51,6 +55,7 @@ colcon build
 ```bash
 MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_auto.sh --dry   # 바퀴 안 움직임
 MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_auto.sh         # g 출발, 스페이스 비상정지, x 종료
+MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_keyboard.sh     # 키보드로 한 칸씩 이동
 ~/mecanum_slam_ws/field_stop.sh                                    # 전부 끄기
 ```
 
@@ -69,5 +74,7 @@ MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_auto.sh         # g 출발, �
 ## 알아둘 점
 
 로봇 안 ROS 통신은 `env.sh`가 시작할 때 고른다. 와이파이가 살아 있으면 와이파이 장치를 쓰고, 없으면 로봇 내부(localhost)만 쓴다. 프로세스마다 시작 시점에 정해지므로 와이파이 상태가 바뀐 뒤에 일부만 다시 켜면 서로 통신하지 못할 수 있다. 그때는 `field_stop.sh`로 전부 끄고 다시 켠다.
+
+`field_common.sh`에 Cartographer를 켜는 `LOC=carto` 분기가 남아 있지만, 파일을 뺐으므로 이 저장소에서는 쓸 수 없다.
 
 아직 실기로 확인하지 못한 것은 `field_compete.sh`로 시작한 주행, 돌던 중 와이파이가 끊기는 경우, 빈 Jetson에 이 저장소를 새로 받아 돌리는 경우다.
