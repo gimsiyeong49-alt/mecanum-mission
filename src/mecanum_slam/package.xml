@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mecanum_slam</name>
+  <version>0.1.0</version>
+  <description>RPLIDAR A2M12 + Cartographer 2D for the mecanum robot (mecanum_bringup is reused, not modified)</description>
+  <maintainer email="mil07220@naver.com">esy</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>mecanum_bringup</exec_depend>
+  <exec_depend>sllidar_ros2</exec_depend>
+  <exec_depend>cartographer_ros</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

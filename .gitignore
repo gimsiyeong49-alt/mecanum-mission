@@ -1,0 +1,18 @@
+# 주행하면 생기는 것
+mission1_field/logs/
+mission1/logs/
+run_logs/
+calib/grab_runs/
+calib/session_*/
+녹화/
+bags/
+측정/
+cyclonedds_auto.xml
+# colcon
+build/
+install/
+log/
+# 기타
+__pycache__/
+*.pyc
+*.bak*
