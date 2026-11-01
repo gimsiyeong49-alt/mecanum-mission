@@ -1,5 +1,6 @@
 # field_keyboard.sh / field_auto.sh 공용 (직접 실행하지 않음)
 W=~/mecanum_slam_ws
+export MISSION_DIR=${MISSION_DIR:-mission1_field}   # 지정 안 하면 대회판
 source $W/env.sh
 LOC=${LOC:-grid}        # grid = 오돔+격자 벽 보정 (기본, SLAM 없음) / carto = Cartographer SLAM (비교용)
 mkdir -p $W/run_logs

@@ -1,7 +1,6 @@
 37bb1b535d5f5e96667831bf6f2f04b2  env.sh
 4ed3dc9697fef1948bc6de0fe269fdab  field_auto.sh
 6c24ad6c9fa52be82479efe4bdcf11d1  field_base.sh
-355bc7c56c7f170603d43150d660c1fa  field_common.sh
 01a84e15d03a0bad2e932a545d65b578  field_compete.sh
 2d8734eaffa89b60014cface366c616e  field_keyboard.sh
 d677ab93a9b55345f5ffc887ad59652b  field_stop.sh

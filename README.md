@@ -4,7 +4,7 @@
 
 2026-11-01 저녁 로봇(Jetson)의 `~/mecanum_slam_ws`에 올라가 있던 판을 그대로 옮겼고, 로그와 녹화, 백업은 뺐다. 옮긴 파일의 md5는 `MANIFEST_robot_md5.txt`에 있다. `README.md`, `.gitignore`, `start_station.sh`, `MANIFEST_robot_md5.txt`는 이 저장소를 만들면서 추가한 파일이다.
 
-대회 주행에 안 쓰는 지도 작성 파일과 카메라 캘리브레이션 도구 같은 보조 도구는 뺐다. 필요하면 첫 커밋(8f68d61)에서 꺼내 쓴다. 지도 작성 파일을 빼면서 `src/mecanum_slam`의 `CMakeLists.txt`와 `package.xml`만 고쳤고, 이 둘을 뺀 나머지는 로봇 파일과 같다.
+대회 주행에 안 쓰는 지도 작성 파일과 카메라 캘리브레이션 도구 같은 보조 도구는 뺐다. 필요하면 첫 커밋(8f68d61)에서 꺼내 쓴다. 로봇에서 옮긴 파일 중 고친 것은 지도 작성 파일을 빼느라 손댄 `src/mecanum_slam`의 `CMakeLists.txt`와 `package.xml`, 기본 임무 폴더를 `mission1_field`로 정한 `field_common.sh`뿐이다.
 
 ## 필요한 것
 
@@ -35,11 +35,9 @@ colcon build
 기반과 잡기 스테이션을 먼저 켜 둔다. `field_compete.sh`는 잡기 스테이션을 켜 주지 않으므로, 이걸 빠뜨리면 큐브 앞까지 간 뒤 잡기에 실패하고 임무가 멈춘다.
 
 ```bash
-MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_base.sh
+~/mecanum_slam_ws/field_base.sh
 ~/mecanum_slam_ws/start_station.sh
 ```
-
-`MISSION_DIR`을 빼면 없는 옛 위치추정 경로를 찾아서 기반이 켜지지 않는다. 시험 실행 명령도 마찬가지다.
 
 로봇을 출발 칸 가운데에 놓고 아래 명령을 실행하면 키 입력 없이 바로 출발한다. 인자는 출발 칸 옆 바깥벽이 로봇의 어느 쪽인지를 뜻한다.
 
@@ -53,10 +51,10 @@ MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_base.sh
 ## 시험 실행
 
 ```bash
-MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_auto.sh --dry   # 바퀴 안 움직임
-MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_auto.sh         # g 출발, 스페이스 비상정지, x 종료
-MISSION_DIR=mission1_field ~/mecanum_slam_ws/field_keyboard.sh     # 키보드로 한 칸씩 이동
-~/mecanum_slam_ws/field_stop.sh                                    # 전부 끄기
+~/mecanum_slam_ws/field_auto.sh --dry   # 바퀴 안 움직임
+~/mecanum_slam_ws/field_auto.sh         # g 출발, 스페이스 비상정지, x 종료
+~/mecanum_slam_ws/field_keyboard.sh     # 키보드로 한 칸씩 이동
+~/mecanum_slam_ws/field_stop.sh         # 전부 끄기
 ```
 
 기록은 `mission1_field/logs/`, 잡기 사진은 `calib/grab_runs/`에 쌓인다. 둘 다 저장소에는 올리지 않는다.
