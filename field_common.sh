@@ -7,6 +7,14 @@ mkdir -p $W/run_logs
 
 slam_running() { screen -ls 2>/dev/null | grep -q "\.slam[[:space:]]"; }
 
+wait_devices() {    # 전원 직후 USB 장치가 다 잡힐 때까지 (최대 60 초). 다 있으면 바로 끝남
+  for i in $(seq 1 60); do
+    [ -e /dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0 ] && [ -e /dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0 ] && ls /dev/serial/by-id/usb-Silicon_Labs_CP2102* >/dev/null 2>&1 && [ "$(ls /dev/v4l/by-path/ 2>/dev/null | grep -c video-index0)" -ge 2 ] && break
+    sleep 1
+  done
+  echo "$(date '+%H:%M:%S') 장치 확인 ($i 초)"
+}
+
 # 위치추정기: 임무 폴더(MISSION_DIR)에 사본이 있으면 그것 (실험판 전용 개선판), 없으면 안정판 것
 LOCALIZER=$W/${MISSION_DIR:-mission1}/grid_localizer.py
 [ -f "$LOCALIZER" ] || LOCALIZER=$W/mission1/grid_localizer.py

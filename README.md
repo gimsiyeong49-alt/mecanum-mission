@@ -4,7 +4,38 @@
 
 2026-11-01 저녁 로봇(Jetson)의 `~/mecanum_slam_ws`에 올라가 있던 판을 그대로 옮겼고, 로그와 녹화, 백업은 뺐다. 옮긴 파일의 md5는 `MANIFEST_robot_md5.txt`에 있다. `README.md`, `.gitignore`, `start_station.sh`, `MANIFEST_robot_md5.txt`는 이 저장소를 만들면서 추가한 파일이다.
 
-대회 주행에 안 쓰는 지도 작성 파일과 카메라 캘리브레이션 도구 같은 보조 도구는 뺐다. 필요하면 첫 커밋(8f68d61)에서 꺼내 쓴다. 로봇에서 옮긴 파일 중 고친 것은 지도 작성 파일을 빼느라 손댄 `src/mecanum_slam`의 `CMakeLists.txt`와 `package.xml`, 기본 임무 폴더를 `mission1_field`로 정한 `field_common.sh`뿐이다.
+대회 주행에 안 쓰는 지도 작성 파일과 카메라 캘리브레이션 도구 같은 보조 도구는 뺐다. 필요하면 첫 커밋(8f68d61)에서 꺼내 쓴다. 로봇에서 옮긴 파일 중 고친 것은 지도 작성 파일을 빼느라 손댄 `src/mecanum_slam`의 `CMakeLists.txt`와 `package.xml`, 기본 임무 폴더를 `mission1_field`로 정한 `field_common.sh`, 잡기 스테이션을 켜 주게 한 `field_compete.sh`, 로봇 안 통신 방식을 고르게 한 `env.sh`, 출발 직전 위치를 확인하게 한 `mission1_field/mission1_node.py`뿐이다.
+
+## 2임무 (배틀럼블)
+
+`mission2/`에 있다. 판단과 주행은 `battle.py`, ROS와 잡기 스테이션 연결은 `battle_node.py`가 맡는다. 1임무 파일은 건드리지 않는다.
+
+출발 칸은 지정하지 않는다. 네 칸 모두 경기장 중심이 왼쪽 앞 45°라 같은 좌표로 계산된다. 규정 그림 3의 방향으로 놓기만 하면 된다.
+
+```bash
+~/mecanum_slam_ws/field_battle.sh ready   # 준비 시간에: 기반과 잡기 스테이션을 켜고 확인
+~/mecanum_slam_ws/field_battle.sh dry     # 바퀴가 안 움직임: 위치, 라이다, 큐브 확인
+~/mecanum_slam_ws/field_battle.sh go      # 심판 신호에: 로봇 안에서 출발
+~/mecanum_slam_ws/mission2/stop.sh        # 비상정지. 그리퍼는 그대로 둔다
+```
+
+위치는 격자 위치추정을 쓰지 않고 오돔, 자이로, 외벽까지의 라이다 거리로 구한다. 벽 보정을 끄려면 `go --no-wall-fix`, 제자리 45° 출발은 `go --start-mode turn45`를 쓴다. 기록은 `mission2/logs/`에 남는다.
+
+## 통신
+
+대회에서는 임무 시작 뒤 통신이 끊긴다. `field_dds.sh local`로 두면 로봇 안 ROS가 와이파이와 상관없이 돈다. 이때 노트북 RViz에는 안 보이고, 평소로 돌리려면 `field_dds.sh wifi`를 쓴다. 끊김 측정은 `python3 tools/topic_watch.py 90`이다.
+
+대회장 라우터에는 USB-C로 접속해 `field_wifi.sh "이름" "비밀번호"`로 붙인다. 재부팅해도 다시 붙고, `field_wifi.sh remove`로 지운다. 대회 전 점검은 `field_check.sh`로 하며 아무것도 바꾸지 않는다. 화면 없이 위치를 보려면 `python3 tools/loc_check.py`를 쓴다.
+
+라운드마다 `field_arm.sh 1` 또는 `field_arm.sh 2`로 준비해 두면 신호 때 `field_arm.sh go` 한 번으로 출발한다. 로봇 안 screen에서 돌므로 접속이 끊겨도 된다.
+
+`field_autostart.sh on`을 해 두면 로봇 전원을 켤 때 기반과 잡기 스테이션이 저절로 켜진다. 임무를 시작할 때 원점을 다시 잡으므로 미리 켜 둔 뒤 로봇을 옮겨도 된다. 끄려면 `field_autostart.sh off`다.
+
+## 버튼
+
+`field_button.py`가 버튼 네 개로 두 임무를 띄운다. 1번은 1임무 준비(약 15초), 2번은 1초 뒤 1임무 출발, 3번은 1초 눌러 1임무를 끄고 2임무 준비, 4번은 2임무 출발이다. 출발 방향은 라이다로 판단하므로 1번을 누른 뒤 로봇을 옮겨 놓아도 되고, 2번을 누르면 출발 전에 자리를 다시 잡는다.
+
+입력은 USB 키보드의 1~4 키, 40핀(`--gpio`), 시험용 파이프(`--fifo /tmp/field_btn`) 중 하나다. 로봇 실기 시험은 파이프로만 했다. 40핀은 아직 쓸 수 없다. 핀 → 버튼 → GND 배선에서 7·29번은 버튼을 떼도 HIGH로 돌아오지 않았고, 31번은 처음부터 LOW였으며, 32번은 칩 입력이 꺼져 있다. `field_autostart.sh on button`은 이 40핀 설정으로 띄우므로 배선을 마친 뒤에 켠다.
 
 ## 필요한 것
 
@@ -32,7 +63,7 @@ colcon build
 
 ## 대회 실행
 
-기반과 잡기 스테이션을 먼저 켜 둔다. `field_compete.sh`는 잡기 스테이션을 켜 주지 않으므로, 이걸 빠뜨리면 큐브 앞까지 간 뒤 잡기에 실패하고 임무가 멈춘다.
+기반과 잡기 스테이션을 먼저 켜 둔다. `field_compete.sh`는 잡기 스테이션이 꺼져 있으면 켜 주지만 약 15초 더 걸린다.
 
 ```bash
 ~/mecanum_slam_ws/field_base.sh
@@ -44,6 +75,7 @@ colcon build
 ```bash
 ~/mecanum_slam_ws/field_compete.sh right   # (1,9) 남쪽 보기 또는 (9,1) 북쪽 보기
 ~/mecanum_slam_ws/field_compete.sh left    # (1,9) 동쪽 보기 또는 (9,1) 서쪽 보기
+~/mecanum_slam_ws/field_compete.sh auto    # 라이다로 판단
 ```
 
 임무는 로봇 안 screen에서 돌기 때문에 노트북 연결이 끊겨도 계속된다. 진행은 `tail -f /tmp/mission_screen.log`로 볼 수 있고, 다시 시작하려면 먼저 `screen -S mission -X quit`을 한다.

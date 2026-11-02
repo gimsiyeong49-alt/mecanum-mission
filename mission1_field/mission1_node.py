@@ -169,6 +169,7 @@ class Mission1Robot(Node):
         self.quit_req = False          # x 키
         self.keys = queue.Queue()      # 키보드 모드 명령
         self.go_event = threading.Event()   # 자율: 출발 키(엔터 / g)
+        self.recheck_req = False
         self.wait_go = False
         self.guard_pts = None          # 몸 기준 라이다 점 (x, y) — 충돌 방지용, 매 스캔
         self.laser_base = None         # base_link 기준 라이다 자세
@@ -290,6 +291,40 @@ class Mission1Robot(Node):
             time.sleep(0.05)
         self.log("원점 다시 잡기 확인 못 함 (계속 진행)")
         return False
+
+    def recheck_origin(self, force=False):
+        """출발 키 직후 확인: 대기 중엔 안 움직였으니 지금 자리가 출발 칸이어야 함. 위치추정이 끊겼거나 칸 중심·출발 방향에서 벗어나 있으면 그 자리로 다시 잡음.
+        (11-01 18:18: 2 분 대기 중 91.7 초 끊겼다 돌아오며 40 cm 튀어 지도가 한 행 밀림. 대기 중에 로봇을 옮겨 놓은 경우도 여기서 맞춰짐.)
+        정상이면 조회 한 번뿐이라 출발이 늦어지지 않음.
+        force = r 키 (버튼 출발이 출발 직전에 보냄): 들어서 옮기면 바퀴가 안 돌아 오돔으로는 안 움직인 걸로 보이고 준비하던 자리에서 쌓은 칸 판정이 남으므로 무조건 다시 잡음."""
+        if not getattr(self, "grid_origin", False):
+            return
+        why = "r 키" if force else None
+        if why is None:
+            try:
+                x, y, th, age = self.lookup("base_link")
+                if age > 0.5:
+                    why = "%.1f 초째 안 들어옴" % age
+                elif math.hypot(x, y) > self.a.recheck_dist:
+                    why = "칸 중심에서 %.1f cm" % (100 * math.hypot(x, y))
+                elif abs(th) > math.radians(self.a.recheck_yaw):
+                    why = "방향이 %.1f° 틀어짐" % math.degrees(th)
+            except Exception as e:
+                why = "조회 실패 (%s)" % e
+        if why is None:
+            return
+        self.log("출발 직전 위치 확인: %s → 지금 자리를 출발 칸으로 다시 잡음" % why)
+        if self.a.start_side == "auto":                # 준비한 뒤 놓은 방향이 다를 수 있으므로 놓인 자세로 다시 판단. 못 정해도 경기이므로 멈추지 않고 전에 정한 방향으로
+            if self.detect_start_side("auto") is None:
+                self.log("  주의: 출발 방향이 분명하지 않음 → %s 로 감" % self.start_name())
+            self.tell_start_yaw()
+        self.reset_origin()
+        self.wait_start()
+        self.last_pose = None
+        with self.lock:                                # 어긋난 위치로 쌓은 칸 판정은 버리고 새로 봄
+            self.occ_scans[:] = 0
+            self.free_scans[:] = 0
+        time.sleep(self.a.recheck_collect)
 
     def start_name(self):
         return "바깥벽 오른쪽·뒤 출발" if abs(wrap(self.psi + math.pi / 2)) < 0.1 else "바깥벽 왼쪽·뒤 출발"
@@ -1250,6 +1285,25 @@ class Mission1Robot(Node):
             self.log("  회전 전 벽 기준 맞춤: 남은 앞뒤 %s 좌우 %s cm" % (
                 "%+.1f" % (100 * m["cx"]) if m["cx"] is not None else "-", "%+.1f" % (100 * m["cy"]) if m["cy"] is not None else "-"))
 
+    def pulse_along(self, Xt, Yt, hx, hy):
+        """몸 앞뒤로만 '톡톡' 맞춤: 짧게 밀고 → 멈춰 위치를 다시 봄. 한 번에 밀면 굴러가는데 앞은 라이다 사각지대라 못 막음
+        (실기 11-02 23:57: (6,4) 에서 2.9 cm 맞추다 4.6 cm 가서 앞 (6,5) 까지 0.5 cm)."""
+        a = self.a
+        for k in range(a.turn_pulses + 1):
+            time.sleep(a.fine_pause if k else 0.1)        # 민 뒤에는 실제로 선 다음에 잼
+            X_, Y_, _ = self.pose()
+            e = (Xt - X_) * hx + (Yt - Y_) * hy           # + 면 몸 앞쪽으로 더 가야 함
+            if abs(e) <= a.turn_pulse_tol or k == a.turn_pulses:
+                self.log("  옆걸음 전 앞뒤 맞춤 끝 (%d 번 밂): 남은 %+.1f cm" % (k, 100 * e))
+                return
+            v = a.settle_min_v
+            t_end = time.monotonic() + min(a.fine_pulse, 0.05 + abs(e) / max(v * 0.35, 1e-3))
+            while time.monotonic() < t_end:
+                self.hold_if_estop()
+                self.send(math.copysign(v, e), 0.0, 0.0)
+                time.sleep(0.02)
+            self.stop()
+
     def wall_align(self, off, label):
         """서 있을 때 이 칸을 둘러싼 벽(뒤·왼·오른, 보이면 앞)까지 거리를 라이다로 직접 재서 몸통을 칸 가운데로.
         off = 바퀴 가운데가 칸 중심보다 앞에 있어야 할 거리. 벽이 없는 쪽은 건드리지 않음. 터틀봇 미로 코드의 벽거리 정렬과 같은 생각."""
@@ -2090,13 +2144,7 @@ class Mission1Robot(Node):
                 lim = min(lim, self.a.wall_prealign)
             if abs(along) > lim:
                 self.log("  옆걸음 전 앞뒤 맞춤 %+.1f cm (몸 %s)" % (-100 * along, P.HEADING_NAME[keep_heading]))
-                try:
-                    self._drive(X_ - along * hx_, Y_ - along * hy_, math.radians(HEADING_YAW[keep_heading]), 0.008,
-                                math.radians(self.a.yaw_tol * 2), "옆걸음 전 앞뒤 맞춤", guard=False, min_v=self.a.min_v,
-                                timeout=self.a.settle_timeout, brake="long")
-                except (GuardStop, MoveTimeout):
-                    self.stop()
-                self.stop()
+                self.pulse_along(X_ - along * hx_, Y_ - along * hy_, hx_, hy_)
         if (from_grab and cell != P.TARGET and mdir is not None and mdir not in (keep_heading, (keep_heading + 2) % 4)
                 and self.a.grab_exit_align):
             # 큐브 잡은 자리는 칸 가운데보다 15 cm 큐브 쪽(두 줄에 걸침) → 거기서 옆 칸 가운데로 바로 가면 대각선으로 두 칸을 쓸고
@@ -2301,6 +2349,8 @@ class Mission1Robot(Node):
                     print("\n*** 비상정지 해제 ***", flush=True)
                 elif self.wait_go and not self.estop:
                     self.go_event.set()
+            elif ch == "r":                                     # 출발 대기 중에만: 지금 자리로 원점 다시 잡고 칸 판정 새로 모음 (버튼 출발)
+                self.recheck_req = self.wait_go
             elif ch == "x":
                 self.quit_req = True
                 self.send_zero()
@@ -2596,6 +2646,9 @@ def main():
     ap.add_argument("--turn-hold-tol", type=float, default=None, help="회전 중 칸 중심에서 이만큼 밀리면 바로 되돌림 [m] (기본 = turn-center-tol×1.5. 작게 하면 굴러가는 보정이 오히려 더 밂, 가상 10-21)")
     ap.add_argument("--turn-center-tol", type=float, default=0.02, help="회전 전 칸 중심 허용 [m]")
     ap.add_argument("--cell", type=float, default=0.40, help="칸 크기 [m] (대회·연습 0.40)")
+    ap.add_argument("--recheck-dist", type=float, default=0.06, help="출발 키 때 칸 중심에서 이만큼 넘게 벗어나 있으면 원점을 다시 잡음 [m] (놓는 오차 2 cm 넘게, 칸 혼동 20 cm 보다 작게)")
+    ap.add_argument("--recheck-yaw", type=float, default=3.0, help="출발 키 때 출발 방향에서 이만큼 넘게 틀어져 있으면 원점을 다시 잡음 [°] (격자 보정 탐색 ±4° 안)")
+    ap.add_argument("--recheck-collect", type=float, default=0.5, help="다시 잡은 뒤 칸 판정을 새로 모으는 시간 [s]")
     ap.add_argument("--start-side", choices=["auto", "right", "left"], default="auto",
                     help="출발 칸 바깥벽 쪽: right = 오른쪽·뒤 ((1,9) 남향 / (9,1) 북향), left = 왼쪽·뒤 ((1,9) 동향 / (9,1) 서향), auto = 라이다로 판단")
     ap.add_argument("--symmetric", action="store_true", help="미러 맵핑: 본 칸의 (5,5) 점대칭 칸도 같다고 봄. 직접 본 값이 항상 우선 (MirrorGrid)")
@@ -2762,7 +2815,9 @@ def main():
             raise MissionAbort("/cmd_vel 에 다른 발행자 %d 개 — 다른 임무/키보드 조종이 켜져 있음 (먼저 끌 것)" % others)
         if not a.no_reset:
             if robot.detect_start_side(a.start_side) is None:
-                raise MissionAbort("출발 방향을 라이다로 못 정함 (옆 바깥벽이 분명하지 않음) — --start-side right(바깥벽 오른쪽)/left(왼쪽) 로 지정")
+                if not (a.execute and a.wait_key and old_tty is not None):
+                    raise MissionAbort("출발 방향을 라이다로 못 정함 (옆 바깥벽이 분명하지 않음) — --start-side right(바깥벽 오른쪽)/left(왼쪽) 로 지정")
+                robot.log("출발 방향을 아직 못 정함 (출발 칸에 놓기 전일 수 있음) → 출발 직전에 다시 봄")
             robot.tell_start_yaw()
             robot.reset_origin()
         robot.wait_start()
@@ -2779,10 +2834,14 @@ def main():
             while not robot.go_event.is_set():
                 if robot.quit_req:
                     raise MissionAbort("출발 전 x 키로 종료")
+                if robot.recheck_req:
+                    robot.recheck_req = False
+                    robot.recheck_origin(force=True)
                 robot.send_zero()
                 time.sleep(0.05)
             robot.wait_go = False
             robot.log("출발")
+            robot.recheck_origin()
         if not a.execute:
             while not robot.quit_req:
                 cell, h = robot.current_cell(), robot.current_heading()

@@ -8,6 +8,7 @@ calib/session_*/
 bags/
 측정/
 cyclonedds_auto.xml
+cyclonedds_local.xml
 # colcon
 build/
 install/
@@ -16,3 +17,9 @@ log/
 __pycache__/
 *.pyc
 *.bak*
+
+mission2/logs/
+.dds_local
+.autostart
+.autostart_button
+.button_map
