@@ -26,7 +26,28 @@ running_localizer() {   # 지금 켜진 위치추정기 파일 경로 (없으면
   done
 }
 
+LIDAR_MARK=/tmp/lidar_mode     # 라이다를 따로 켠 경우의 모드. 없으면 launch 기본값 Boost
+lidar_pid() { for d in /proc/[0-9]*; do c=$(tr '\0' '\n' < $d/cmdline 2>/dev/null | head -1); case "$c" in */sllidar_node) echo "${d#/proc/}"; return;; esac; done; }
+lidar_off() {
+  screen -S lidar_alt -X quit 2>/dev/null
+  local p; p=$(lidar_pid); [ -n "$p" ] && kill -INT $p
+  for i in $(seq 1 20); do [ -z "$(lidar_pid)" ] && break; sleep 0.25; done
+}
+lidar_mode() {      # 라이다만 다시 켜서 모드를 바꿈. 1임무 = Boost (약 30 cm 안 검은 벽), 2임무 = Sensitivity (비스듬한 먼 벽)
+  local want=$1 now port
+  now=$(cat $LIDAR_MARK 2>/dev/null || echo Boost)
+  [ "$now" = "$want" ] && return 0
+  echo "[라이다] $now → $want"
+  lidar_off
+  port=$(grep -m1 -oE '^LIDAR_PORT *= *"[^"]+"' $W/src/mecanum_slam/launch/robot.launch.py | sed 's/.*"\(.*\)"/\1/')
+  : > /tmp/lidar_alt.log
+  screen -dmS lidar_alt bash -c "source $W/env.sh; ros2 run sllidar_ros2 sllidar_node --ros-args -r __node:=sllidar_node -p channel_type:=serial -p serial_port:=$port -p serial_baudrate:=256000 -p frame_id:=laser -p inverted:=false -p angle_compensate:=true -p scan_mode:=$want > /tmp/lidar_alt.log 2>&1"
+  for i in $(seq 1 60); do grep -q "current scan mode: $want" /tmp/lidar_alt.log && break; sleep 0.25; done
+  if grep -q "current scan mode: $want" /tmp/lidar_alt.log; then echo "$want" > $LIDAR_MARK; sleep 1; else echo "[라이다] $want 로 못 바꿈: /tmp/lidar_alt.log"; fi
+}
+
 start_slam() {      # 기반(구동·센서·위치추정)을 새로 켠다
+  lidar_off; rm -f $LIDAR_MARK
   L=$W/run_logs/slam_$(date +%m%d_%H%M%S).log
   if [ "$LOC" = carto ]; then
     echo "[기반] Cartographer SLAM 켜는 중 → 기록 $L"
@@ -53,9 +74,11 @@ ensure_base() {     # 기반이 켜져 있으면 그대로 쓰고(빠름), 없�
     slam_running && stop_slam
     start_slam
   fi
+  lidar_mode "${LIDAR_WANT:-Boost}"
 }
 
 stop_slam() {
+  lidar_off; rm -f $LIDAR_MARK
   slam_running || return 0
   screen -S slam -X stuff $'\003'            # launch 에 Ctrl+C
   for i in $(seq 1 20); do slam_running || break; sleep 0.5; done

@@ -12,6 +12,10 @@ if [ "${1:-}" = go ]; then
   if [ -f $ARM ]; then
     M=$(cat $ARM); rm -f $ARM
     if [ "$M" = 1 ]; then screen -S mission -X stuff g; else touch /tmp/battle_go; fi
+    if [ "$M" = 2 ]; then          # 2임무 녹화 (11-03): 출발 신호 뒤에 켜서 출발을 안 늦춤. 5 분 30 초 뒤 저절로 끝. 분석: mission2/bags + logs/*.jsonl
+      mkdir -p $W/mission2/bags      # screen 안(가상 단말)에선 ros2 bag 이 시작 단계에서 멈춤 (11-03 19:04) → 단말 없이 setsid, 입력 /dev/null
+      setsid nohup bash -c "source $W/env.sh >/dev/null 2>&1; exec timeout -s INT 330 ros2 bag record -o $W/mission2/bags/battle_$(date +%m%d_%H%M%S) /scan /odometry/filtered /imu/data /cmd_vel /cube_station/view/compressed /tf_static" > /tmp/battle_rec.log 2>&1 < /dev/null &
+    fi
     echo "출발 보냄 ($M 임무)"; exit 0
   fi
   M=${2:-$(cat $W/.autostart 2>/dev/null)}     # 준비가 안 돼 있어도 경기이므로 멈추지 않음: 처음부터 켜고 바로 출발
@@ -36,7 +40,7 @@ case "$CMD" in
     if [ "$CMD" = 1 ]; then
       screen -dmS mission bash -c "MISSION_DIR=mission1_field $W/field_auto.sh --start-side $SIDE 2>&1 | tee $LOG"
     else
-      screen -dmS mission bash -c "source $W/field_common.sh; ensure_base; $W/mission2/run_go.sh --wait-go 2>&1 | tee $LOG"
+      screen -dmS mission bash -c "source $W/field_common.sh; LIDAR_WANT=Sensitivity; ensure_base; $W/mission2/run_go.sh --wait-go 2>&1 | tee $LOG"
     fi
     for i in $(seq 1 240); do
       grep -q "준비 끝" $LOG 2>/dev/null && break
@@ -52,7 +56,9 @@ case "$CMD" in
     for i in 1 2 3 4 5 6 7 8; do node_up || break; sleep 0.25; done
     node_up && kill_nodes KILL      # 안 꺼지면 다음 준비가 막힘. 바퀴는 명령이 끊기면 펌웨어가 0.3 초 안에 멈춤
     curl -s -m 1 -o /dev/null "http://127.0.0.1:8090/do?a=abort"     # 임무가 맡긴 잡기가 돌고 있으면 그것도 멈춤
-    screen -S mission -X quit 2>/dev/null; rm -f $ARM /tmp/battle_go; echo "준비 취소";;
+    screen -S mission -X quit 2>/dev/null; rm -f $ARM /tmp/battle_go
+    for d in /proc/[0-9]*; do c=$(tr '\0' ' ' < $d/cmdline 2>/dev/null); case "$c" in *"ros2 bag record -o $W/mission2/bags/"*) kill -INT ${d#/proc/} 2>/dev/null;; esac; done   # 녹화도 끝 (INT 라야 bag 이 닫힘)
+    echo "준비 취소";;
   status) [ -f $ARM ] && echo "$(cat $ARM) 임무 준비됨" || echo "준비 안 됨"; node_up && echo "노드 켜짐"; tail -16 $LOG 2>/dev/null;;
   *) sed -n 3,8p "$0"; exit 1;;
 esac

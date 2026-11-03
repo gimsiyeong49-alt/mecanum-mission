@@ -13,7 +13,7 @@ import cv2, numpy as np
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cube_face import mask_of
+from cube_face import mask_of, EntryWatch
 print = functools.partial(print, flush=True)
 
 ap = argparse.ArgumentParser()
@@ -22,6 +22,7 @@ ap.add_argument("--rig-forward", type=float, default=0.186, help="바퀴 가운�
 ap.add_argument("--grip-x", type=float, default=0.191, help="쥘 때 큐브 가운데 앞 [m] (10-29 그리퍼 재기)")
 ap.add_argument("--grip-left", type=float, default=0.010, help="옆맞춤 목표: 몸 가운데에서 왼쪽 [m] (10-29 잰 값 0.005. 11-01 그리퍼가 왼쪽으로 약 2~3° 꺾임 → 잡힌 기록 범위 안쪽인 0.010)")
 ap.add_argument("--push", type=float, default=0.008)
+ap.add_argument("--push-battle", type=float, default=0.015, help="2임무: 큐브에 닿은 뒤 더 미는 거리 [m]. 덜 들어가 앞쪽만 물면 큐브가 꺾임 (11-03), 막대에 붙여 밀면 반듯해지고 큐브만 조금 밀림. 11-03 21시 사용자: 더 밀어 확실히 → 8 → 15 mm")
 ap.add_argument("--grip-us", type=int, default=2100); ap.add_argument("--open-us", type=int, default=1500)
 ap.add_argument("--min-w", type=float, default=0.75)
 # 옆맞춤 기준: 맞추는 목표는 5 mm 그대로 (10-31 19:49: 10 mm 로 풀었더니 오른쪽 7.2 mm 에서 놓침. 왼쪽은 13.5 mm 도 잡힘 →
@@ -32,7 +33,7 @@ ap.add_argument("--coast-max", type=float, default=0.04, help="옆맞춤에서 �
 ap.add_argument("--side-max", type=float, default=0.015, help="옆맞춤 3 번 뒤에도 이보다 벗어나면 멈춤 [m]")
 ap.add_argument("--min-iou", type=float, default=0.85, help="큐브 모형과 빨간 영역 겹침이 두 카메라 모두 이 이상일 때만 믿음")
 ap.add_argument("--turn-min", type=float, default=8.0); ap.add_argument("--turn-max", type=float, default=25.0)
-ap.add_argument("--v", type=float, default=0.16); ap.add_argument("--v-slow", type=float, default=0.10)
+ap.add_argument("--v", type=float, default=0.16); ap.add_argument("--v-slow", type=float, default=0.10); ap.add_argument("--v-fast", type=float, default=0.25)
 ap.add_argument("--min-v", type=float, default=0.10); ap.add_argument("--min-v-side", type=float, default=0.16)  # 주행 코드와 같은 최소 속도
 ap.add_argument("--max-forward", type=float, default=0.40); ap.add_argument("--max-side", type=float, default=0.15)
 ap.add_argument("--port", default="/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0")
@@ -114,7 +115,8 @@ def look(tag, n=4):
             L, Rr = fresh_pair(t_req)
             if L is None: raise Stop("카메라 사진이 안 들어옴")
             t_req = time.time(); last = (L, Rr)
-            r_ = FIT.fit(L, Rr, min_iou=a.min_iou)
+            # 둘째 장부터 직전 답에서 이어 찾음 (149 → 37 ms, 같은 답, 11-03 로봇 실측)
+            r_ = FIT.fit(L, Rr, min_iou=a.min_iou, init=[*res[-1]["M"], res[-1]["yaw"]] if st.get("quick") and res else None)
             if r_ is not None and r_["ok"]: res.append(r_)
     finally:
         st["measuring"] = False
@@ -132,6 +134,7 @@ def look(tag, n=4):
         if spread <= 5.0:
             x, y = to_body(P)
             m = dict(x=x, y=y, yaw=yaw, spread=spread, n=len(res), iou=iou)
+            st["pred"] = dict(x=x, y=y, yaw=yaw, t=time.time())      # 2임무: 이후 한쪽 카메라가 가려지면 이 값을 움직인 만큼 옮겨 씀
             st["last"] = m; st["overlay"] = dict(fl=res[-1]["hull_l"], fr=res[-1]["hull_r"], t=time.time())
             log("[%s] 큐브: 앞 %.1f cm, %s %.1f cm, 각도 %.1f°, 겹침 %.3f, %d장 흔들림 %.1f mm (재기 %.2f 초)"
                 % (tag, 100 * x, "왼쪽" if y > 0 else "오른쪽", 100 * abs(y), yaw, iou, len(res), spread, st.get("t_look", 0)))
@@ -244,10 +247,16 @@ def safe_move(dx, dy, v, label, min_v, **kw):
     if f < 1.0:
         log("  %s: 라이다로 보니 벽 %.0f cm 안 → %.1f cm 만 감 (명령 %.1f cm) · %s" % (label, 100 * _limit(), 100 * f * math.hypot(dx, dy), 100 * math.hypot(dx, dy), _nearest_txt(dx, dy)))
         if f * math.hypot(dx, dy) < 0.003: return 0.0
-    move_rel(dx * f, dy * f, v, label, min_v, **kw); return f
+    move_rel(dx * f, dy * f, v, label, min_v, **kw)
+    p = st.get("pred")
+    if p is not None:                                   # 우리가 움직인 만큼 큐브는 몸 기준으로 반대로 옮겨 보임. 짧은 옆걸음은 명령보다 약 side_gain 배 감 (11-03 실측)
+        side = dy * f * (st.get("side_gain", 2.0) if st.get("quick") and dx == 0.0 else 1.0)
+        p["x"] -= dx * f; p["y"] -= side
+    return f
 
 
 def safe_turn(dyaw):
+    st["pred"] = None                                  # 돌면 예측값 버림 (2임무는 안 돎)
     c_ = _clear_of(TS.sweep_rot(0, 0, 0.0, dyaw))
     if c_ < _limit():
         log("  회전 %.1f°: 몸이 도는 자리가 벽에서 %.1f cm → 돌지 않음" % (math.degrees(dyaw), 100 * c_)); return False
@@ -327,7 +336,7 @@ def check_motion():
     if not st.get("owner_mission") and node.count_publishers("/cmd_vel") > 1: raise Stop("/cmd_vel 에 다른 발행자 — 키보드·임무 끌 것")
 
 
-def move_rel(dx, dy, v, label, min_v, tol=0.005, slow_last=0.0, v_slow=None, timeout=15.0):
+def move_rel(dx, dy, v, label, min_v, tol=0.005, slow_last=0.0, v_slow=None, timeout=15.0, dyaw=0.0, kw=1.5):
     check_motion(); x0, y0, h0 = pose["p"]; t0 = time.time(); d = 0.0
     st["overlay"] = {}                     # 초록 = 멈춰서 잰 값 → 움직이기 시작하면 지움 (남겨 두면 뒤처져 따라오는 것처럼 보임)
     while True:
@@ -338,10 +347,11 @@ def move_rel(dx, dy, v, label, min_v, tol=0.005, slow_last=0.0, v_slow=None, tim
         rx, ry = dx - px, dy - py; d = math.hypot(rx, ry)
         if d < tol: break
         if time.time() - t0 > timeout: stop(); raise Stop("%s 시간 초과" % label)
+        if st.get("watch") is not None and st["watch"].vanished(time.time()): stop(); raise Stop("큐브가 그리퍼로 들어오기 전에 사라짐")
         sp = v_slow if (v_slow and d < slow_last) else v; sp = max(min_v, min(sp, 1.5 * d))
         ch, sh = math.cos(h - h0), math.sin(h - h0)
         tw = Twist(); tw.linear.x = sp * (rx * ch + ry * sh) / d; tw.linear.y = sp * (-rx * sh + ry * ch) / d
-        tw.angular.z = 1.5 * math.atan2(math.sin(h0 - h), math.cos(h0 - h)); pub.publish(tw); time.sleep(0.05)
+        tw.angular.z = kw * math.atan2(math.sin(h0 + dyaw - h), math.cos(h0 + dyaw - h)); pub.publish(tw); time.sleep(0.05)
     stop(); log("  %s 끝 (남은 %.1f mm)" % (label, 1000 * d))
 
 
@@ -372,19 +382,32 @@ def gripper(us):
             except BlockingIOError: time.sleep(0.005)
         else: raise Stop("그리퍼 명령을 2 초 동안 못 씀 (포트가 계속 막힘)")
     finally: os.close(fd)
+    st["grip_us"] = us
     log("  그리퍼 G,%d" % us)
 
 
 # ---------------- 잡기 단계 ----------------
+def predicted(tag, why):
+    """2임무: 발견한 뒤 한쪽(또는 둘 다) 카메라가 상대 차체에 가려지면, 마지막으로 잰 자리를 우리가 움직인 만큼 옮긴 예측값으로 계속 잡음 (11-03 사용자)."""
+    p = st.get("pred")
+    if not st.get("battle") or p is None or time.time() - p["t"] > 15.0:
+        return None
+    log("[%s] %s → 예측값으로 계속: 앞 %.1f cm, %s %.1f cm (%.1f 초 전에 잰 값에서)" % (tag, why, 100 * p["x"], "왼쪽" if p["y"] > 0 else "오른쪽", 100 * abs(p["y"]), time.time() - p["t"]))
+    return dict(x=p["x"], y=p["y"], yaw=p["yaw"], spread=0.0, n=0, iou=0.0, pred=True)
+
+
 def look_or_seek(tag):
     moves, blind = 0, 0
     for i in range(5):
         m, side = look(tag if i == 0 else "%s 다시%d" % (tag, i))
         if m is not None: return m
+        if side != "retry":
+            q = predicted(tag, "두 카메라 모두 가려짐" if side == 0 else "한쪽 카메라 가려짐")
+            if q is not None: return q
         if side == 0:
             # 한 번 못 본 것(사람이 가림·사진 한 장 늦음)으로 바로 끝내지 않음: 두 번까지 다시 봄
             blind += 1
-            if blind > 2: raise Stop("큐브가 두 카메라 모두에 안 보임 (3번 봄)")
+            if blind > (0 if st.get("battle") else 2): raise Stop("큐브가 두 카메라 모두에 안 보임 (%d번 봄)" % blind)   # 2임무: 기록 225 개에서 다시 봐서 살린 적 0 번, 바로 순회로
             log("  두 카메라 모두 큐브 없음 → 다시 봄 (%d/2)" % blind); time.sleep(0.3); continue
         if side == "retry":
             log("  두 카메라 다 보임 → 움직이지 않고 다시 잼"); continue
@@ -398,6 +421,9 @@ def look_or_seek(tag):
 
 def grab(dry):
     st["state"] = "잡기 (계획만)" if dry else "잡기"
+    st["pred"] = None
+    if st.get("battle") and live.get("ok") and time.time() - live.get("t", 0) < 1.0:     # 막 멈춘 자리에서 실시간으로 본 큐브 = 첫 예측값
+        st["pred"] = dict(x=live["x"], y=live["y"], yaw=live.get("yaw", 0.0), t=time.time())
     m = look_or_seek("보기 1") if not dry else look("보기 1")[0]
     if m is None: raise Stop("큐브를 두 카메라에서 못 찾음")
     fwd = m["x"] - a.grip_x + a.push; dy = m["y"] - a.grip_left
@@ -405,7 +431,8 @@ def grab(dry):
                                                  "왼쪽" if dy > 0 else "오른쪽", 100 * abs(dy), 100 * fwd, a.grip_us))
     if not (0.0 < fwd < a.max_forward and abs(m["y"]) < a.max_side): raise Stop("시험 범위 밖 (앞 %.2f m, 옆 %.2f m)" % (fwd, m["y"]))
     if dry: return
-    gripper(a.open_us); time.sleep(0.5)
+    was_open = st.get("grip_us") == a.open_us
+    gripper(a.open_us); time.sleep(0.3 if st.get("quick") and was_open else 0.5)   # 이미 열려 있으면 덜 기다림
     if a.turn_min <= abs(m["yaw"]) <= a.turn_max:
         yaw0 = m["yaw"]
         if st.get("owner_mission"):
@@ -417,11 +444,16 @@ def grab(dry):
     # 3번 안에 2.5 mm 가 안 되면 5 mm 안이면 들어감, 그것도 아니면 멈춤
     # 짧은 옆 이동은 멈춘 뒤 굴러가 매번 약 5 mm 더 감(10-29: 0.6 cm 명령 → 1.1 cm, 목표를 사이에 두고 왔다 갔다) →
     # 카메라로 '명령 vs 실제 간 거리'를 재서 더 간 양(coast)을 배우고 다음 명령에서 그만큼 덜 감 (바닥·배터리가 달라도 따라감)
-    for i in range(a.side_tries + 1):
+    tries = a.side_tries
+    for i in range(tries + 1):
         dy = m["y"] - a.grip_left
         # 5 mm 안이면 끝: 짧게 밀면 약 5 mm 더 가서(굴러감) 그보다 작은 오차는 바퀴로 못 고침 — 고치려다 왔다 갔다·시간만 씀(10-29)
-        if abs(dy) <= a.side_tol or i == a.side_tries: break
+        if abs(dy) <= a.side_tol or i == tries: break
+        if st.get("quick") and -0.005 <= dy <= 0.010: break         # 왼쪽은 13.5 mm 도 잡힘 (10-31). 7 mm 를 맞추려다 5 번 왕복 7 초 (11-03)
         cmd = dy - math.copysign(min(st["coast"], 0.8 * abs(dy)), dy)
+        if st.get("quick"):     # 굴러감을 빼는 대신 '명령 대비 실제로 간 비율'을 배움. 이 바닥 실측 5.5→14, 8.3→24, 17→43, 22→54 mm 라 약 2.5 배 (11-03)
+            cmd = dy / st.get("side_gain", 2.0)
+            if abs(cmd) < 0.004: cmd = math.copysign(0.004, dy)   # 3 mm 안쪽 명령은 아예 안 움직임
         y_before = m["y"]
         # 라이다가 조금 줄였으면(덜 감) 다시 재서 판단 — 남은 오차가 허용 안이면 그대로 들어감. 전혀 못 움직일 때만 멈춤
         # (10-30 02:27: 1.1 cm 중 1.096 cm 가서 남은 1.9 mm 인데 '100% 아니면 실패'로 임무 중단)
@@ -430,11 +462,12 @@ def grab(dry):
         m = look_or_seek("옆맞춤 뒤 %d" % (i + 1))
         actual = y_before - m["y"]                                  # 큐브가 옆으로 옮겨 보인 만큼 = 로봇이 실제로 간 거리
         over = (actual - cmd) * math.copysign(1.0, cmd)             # 더 간 양 (+)
+        if st.get("quick"): st["side_gain"] = max(1.0, min(3.5, 0.5 * st.get("side_gain", 2.0) + 0.5 * actual / cmd))
         st["coast"] = max(0.0, min(a.coast_max, 0.5 * st["coast"] + 0.5 * over))   # 적분 펌웨어 뒤 3 cm 넘게 더 가기도 함 (11-01 17:32: 3.4 cm 명령 → 6.7 cm)
     dy = m["y"] - a.grip_left
     if abs(dy) > a.side_max: raise Stop("옆맞춤 %d번 해도 %.0f mm 안에 안 들어옴 (%.1f mm)" % (a.side_tries, 1000 * a.side_max, 1000 * dy))
     log("옆맞춤 결과: 그리퍼 가운데에서 %s %.1f mm" % ("왼쪽" if dy > 0 else "오른쪽", 1000 * abs(dy)))
-    fwd = m["x"] - a.grip_x + a.push
+    fwd = m["x"] - a.grip_x + (a.push_battle if st.get("battle") else a.push)
     th = math.radians(min(45.0, abs(m["yaw"])))
     if abs(m["yaw"]) >= a.turn_min:
         # 돌아간 큐브: 대각선으로 물면 모서리가 튀어나옴(10-29 사진, 26°) → 모서리가 먼저 막대에 닿는 만큼 + 1 cm 더 밀어
@@ -443,15 +476,51 @@ def grab(dry):
         fwd += extra; log("큐브 %.1f° 돌아감 → 막대로 밀어 반듯하게: %.1f cm 더 밀기" % (m["yaw"], 100 * extra))
     if not (0.0 < fwd < a.max_forward): raise Stop("들어갈 거리 이상 (%.2f m)" % fwd)
     log("들어가기 %.1f cm (마지막 10 cm 천천히)" % (100 * fwd))
+    if st.get("battle"): st["watch"] = EntryWatch()    # 2임무: 큐브가 화면 아래로 빠져 들어오는지 지켜봄 (live_loop 가 사진을 넣음)
     if safe_move(fwd, 0.0, a.v, "들어가기", a.min_v, slow_last=0.10, v_slow=a.v_slow) < 1.0:
         log("  들어가기가 벽 때문에 덜 감 — 쥐기는 시도")
-    time.sleep(0.3); gripper(a.grip_us); time.sleep(0.8)
+    time.sleep(0.3)
+    if st.get("watch") is not None and st["watch"].vanished(time.time()): raise Stop("큐브가 그리퍼로 들어오기 전에 사라짐")
+    gripper(a.grip_us); time.sleep(0.8)
+    if st.get("watch") is not None:
+        st["went_in"] = st["watch"].went_in(); log("  큐브가 그리퍼로 들어옴: %s" % st["went_in"])
     log("완료: 쥠")
 
 
-def run_action(name, fn, owner=None):
+def grab_fast():
+    """2임무용 빠른 잡기: 2장씩만 재고, 몸을 큐브 쪽으로 살짝 돌리며 곧게 들어가 바로 쥠. 못 쥐면 battle.py 쥠 확인에서 걸려 다음엔 grab() 으로. 1임무는 안 씀.
+    옆걸음으로 mm 를 맞추지 않음: 짧게 밀면 이 바닥에서 1 cm 넘게 더 가고 작은 명령은 아예 안 움직임 (11-03 03:48: 8.4 mm 치우친 채 들어가 큐브를 밂).
+    앞으로 가면서 옆까지 가게 해도 옆이 덜 감 (03:35). 몸을 돌리면 바퀴는 앞으로만 굴러 옆 미끄러짐이 없음. 3 cm 넘게 어긋나면 옆걸음 한 번으로 줄임."""
+    st["state"] = "잡기"
+    gripper(a.open_us)
+    see = lambda tag: look(tag, n=2)[0] or look(tag + " 다시")[0]
+    m = see("빠른 보기")
+    if m is None: raise Stop("큐브가 안 보임")
+    if not (0.0 < m["x"] - a.grip_x + a.push < a.max_forward and abs(m["y"]) < a.max_side): raise Stop("시험 범위 밖 (앞 %.2f m, 옆 %.2f m)" % (m["x"], m["y"]))
+    if abs(m["y"] - a.grip_left) > 0.03:
+        if safe_move(0.0, m["y"] - a.grip_left, a.v, "옆걸음", a.min_v_side, tol=0.003) == 0.0: raise Stop("옆걸음할 공간이 없음 (벽)")
+        m = see("옆걸음 뒤")
+        if m is None: raise Stop("옆걸음 뒤 큐브가 안 보임")
+    gx = a.grip_x - a.push
+    if abs(m["yaw"]) >= a.turn_min:   # 돌아간 큐브: grab() 과 같이 막대로 밀어 반듯하게
+        th = math.radians(min(45.0, abs(m["yaw"])))
+        gx -= SIDE / 1000.0 / 2 * (math.cos(th) + math.sin(th) - 1) + 0.010
+    d = 0.0                           # 끝에서 큐브가 몸 기준 (gx, grip_left) 에 오는 방향 d 와 자리. 자리가 그 방향의 직선 위가 되게 몇 번 되풀이
+    for _ in range(40):               # 한 번에 약 0.7 배로 줄어드는 반복이라 넉넉히 (4 번이면 5 mm 남음)
+        fwd = m["x"] - (gx * math.cos(d) - a.grip_left * math.sin(d))
+        dy = m["y"] - (gx * math.sin(d) + a.grip_left * math.cos(d))
+        d = math.atan2(dy, fwd)
+    if not (0.0 < fwd < a.max_forward): raise Stop("들어갈 거리 이상 (%.2f m)" % fwd)
+    log("빠른 들어가기: 앞 %.1f cm, 옆 %+.1f mm, 몸 돌림 %+.1f°" % (100 * fwd, 1000 * dy, math.degrees(d)))
+    if safe_move(fwd, dy, a.v_fast, "빠른 들어가기", a.min_v, slow_last=0.10, v_slow=a.v_slow, dyaw=d, kw=3.0) < 1.0:
+        log("  들어가기가 벽 때문에 덜 감 — 쥐기는 시도")
+    time.sleep(0.1); gripper(a.grip_us); time.sleep(0.5)
+    log("완료: 쥠")
+
+
+def run_action(name, fn, owner=None, battle=False, quick=False):
     if st["busy"]: return "다른 동작 중"
-    st["busy"] = True; st["abort"] = False; st["owner_mission"] = owner == "mission"; st["result"] = None
+    st["busy"] = True; st["abort"] = False; st["owner_mission"] = owner == "mission"; st["battle"] = battle; st["quick"] = battle or quick; st["result"] = None; st["went_in"] = None
     run_dir[0] = os.path.expanduser("~/mecanum_slam_ws/calib/grab_runs/" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S_") + name)
     os.makedirs(run_dir[0], exist_ok=True)
 
@@ -463,9 +532,9 @@ def run_action(name, fn, owner=None):
         except Exception as e:
             log("오류: %r" % e); st["result"] = "오류: %r" % e
         finally:
-            stop(); st["owner_mission"] = False; st["busy"] = False; st["state"] = "대기"
+            stop(); st["watch"] = None; st["owner_mission"] = False; st["busy"] = False; st["state"] = "대기"
     threading.Thread(target=work, daemon=True).start()
-    if name == "grab":  # 포트폴리오용: 잡는 동안 웹 화면(카메라 두 대 + 선·측정값)을 10 fps 영상으로 저장
+    if name.startswith("grab"):  # 포트폴리오용: 잡는 동안 웹 화면(카메라 두 대 + 선·측정값)을 10 fps 영상으로 저장
         threading.Thread(target=record_view, args=(os.path.join(run_dir[0], "카메라화면.mp4"),), daemon=True).start()
     return "시작"
 
@@ -547,7 +616,7 @@ def mission_log(n=12):
 
 
 ACTIONS = {
-    "grab": lambda: grab(False), "plan": lambda: grab(True),
+    "grab": lambda: grab(False), "plan": lambda: grab(True), "grabfast": grab_fast,
     "open": lambda: gripper(a.open_us), "close": lambda: gripper(a.grip_us),
     "back20": lambda: (gripper(a.open_us), time.sleep(0.6), move_rel(-0.20, 0.0, a.v, "뒤로 20 cm", a.min_v)),
 }
@@ -581,6 +650,7 @@ def live_loop():
         if st.get("measuring"): time.sleep(0.03); continue   # 멈춰서 재는 동안 양보 (10-30: 재기 2~3 초·라이다 수신 밀림 → 큐브 미션 15 초)
         t0 = time.time()
         fl, fr = frames["L"][0], frames["R"][0]
+        if st.get("watch") is not None: st["watch"].feed((fl, fr), time.time())
         init = [*live["M"], live["yaw"]] if live.get("ok") and time.time() - live["t"] < 0.5 else None  # 직전 위치에서 이어 찾기
         r_ = FIT.fit(fl, fr, min_iou=a.min_iou, init=init, fast=True)   # 빨간 영역도 절반 크기 (같은 답, 18 → 8 ms)
         # 선을 계산한 바로 그 사진에 그려 보여 줌 (최신 사진 + 조금 전 선이면 선이 뒤따라오는 것처럼 보임, 10-29)
@@ -632,9 +702,9 @@ class Hd(BaseHTTPRequestHandler):
             x = q.get("a")
             if x == "abort": st["abort"] = True; stop(); log("멈춤 버튼")
             elif x and x.startswith("m_"): log("임무: %s → %s" % (x, mission_cmd(x)))
-            elif x in ACTIONS: log("요청: %s%s → %s" % (x, " (임무)" if q.get("owner") == "mission" else "", run_action(x, ACTIONS[x], q.get("owner"))))
+            elif x in ACTIONS: log("요청: %s%s → %s" % (x, " (임무)" if q.get("owner") == "mission" else "", run_action(x, ACTIONS[x], q.get("owner"), q.get("battle") == "1", q.get("quick") == "1")))
         lv = {k: v for k, v in live.items() if k in ("ok", "x", "y", "yaw", "iou", "cut")} if time.time() - live.get("t", 0) < 1.0 else {}
-        return self.send(json.dumps(dict(state=st["state"], busy=st["busy"], log=st["log"], last=st["last"], live=lv, result=st.get("result"), mission=mission_running(), mlog=mission_log()), ensure_ascii=False).encode(), "application/json")
+        return self.send(json.dumps(dict(state=st["state"], busy=st["busy"], log=st["log"], last=st["last"], live=lv, result=st.get("result"), went_in=st.get("went_in"), mission=mission_running(), mlog=mission_log()), ensure_ascii=False).encode(), "application/json")
 
 
 threading.Thread(target=rviz_image_loop, daemon=True).start()   # view() 정의 뒤에 시작

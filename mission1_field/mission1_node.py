@@ -1504,7 +1504,7 @@ class Mission1Robot(Node):
             return False, "잡기 스테이션이 다른 동작 중"
         self.stop()
         self.log("  큐브 옆 칸 정면에서 멈춤 → 잡기 스테이션: 재기·맞추기·들어가기·쥐기")
-        get("/do?a=grab&owner=mission")
+        get("/do?a=grab&owner=mission&quick=1")
         t0, busy_seen = time.monotonic(), False
         while time.monotonic() - t0 < self.a.station_timeout:
             if self.quit_req or self.estop:

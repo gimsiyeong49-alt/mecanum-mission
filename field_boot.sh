@@ -8,7 +8,7 @@ echo "$(date '+%H:%M:%S') 부팅 시작"
 if [ -f $W/.autostart_button ]; then
   mkdir -p $W/run_logs
   SIDE=$(cat $W/.autostart_button); SIDE=${SIDE:-auto}
-  screen -dmS button bash -c "python3 $W/field_button.py --side $SIDE --gpio 7 29 31 32 --gpio-low >> $W/run_logs/button_$(date +%m%d_%H%M%S).log 2>&1"
+  screen -dmS button bash -c "python3 $W/field_button.py --side $SIDE --gpio 7 29 31 22 --gpio-low --hold 0.05 --hold-long 0.05 --on-release >> $W/run_logs/button_$(date +%m%d_%H%M%S).log 2>&1"
   echo "$(date '+%H:%M:%S') 버튼 프로그램 켬"
   exit 0
 fi

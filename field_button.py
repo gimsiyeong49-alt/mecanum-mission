@@ -2,9 +2,9 @@
 """라우터·노트북 없이 로봇에 단 버튼 4개로 임무를 준비하고 출발. 누르는 순간 네트워크가 필요 없음.
   1번 = 구동·센서·위치추정·1임무 노드 켜기 (바퀴 안 움직임). 끝나면 그리퍼가 한 번 여닫힘
   2번 = 1임무 출발 (누르고 --delay1 초 뒤)
-  3번 = 1임무 끄고 2임무 준비 (--hold-long 초 눌러야 함, 달리는 중이어도 끔). 끝나면 그리퍼가 한 번 여닫힘
+  3번 = 1임무 끄고 2임무 준비 (--hold-long 초 눌러야 함, 달리는 중이어도 끔). 끝나면 그리퍼가 두 번 여닫힘 (1임무와 구별)
   4번 = 2임무 출발 (누르고 --delay2 초 뒤)
-준비 실패면 그리퍼가 세 번 여닫힘 → 그 버튼을 다시 누름. 이미 준비된 임무의 1·3번은 그리퍼만 여닫아 상태를 알려 줌.
+준비 실패면 그리퍼가 세 번 여닫힘 → 그 버튼을 다시 누름. 이미 준비된 임무의 1·3번은 그리퍼만 여닫아 상태를 알려 줌 (1임무 한 번, 2임무 두 번).
 준비 안 된 임무의 출발 버튼, 달리는 중의 1·2·4번, 준비 중의 모든 버튼은 무시. 2임무 준비 상태에서 1번은 --hold-long 초 눌러야 1임무로 돌아감.
   python3 field_button.py [--side auto|right|left] [--dev 장치...] [--gpio 핀1 핀2 핀3 핀4]
   python3 field_button.py --watch     # 눌러 보기만 (임무 안 건드림)
@@ -29,8 +29,8 @@ def log(msg):
 def edge(down, b, pressed):
     if pressed:
         down[b] = time.monotonic()
-    elif b in down:
-        log("%d번 %.2f 초 누름: 짧아서 무시" % (b, time.monotonic() - down.pop(b)))
+    else:
+        down.pop(b, None)
 
 
 class Evdev:
@@ -115,10 +115,11 @@ class Gpio:
 class Fifo:
     """버튼 달기 전 시험용: 파일에 쓴 숫자 1~4 를 누름으로 봄. 뗌이 없어 필요한 시간만큼 눌린 셈."""
 
-    def __init__(self, path):
+    def __init__(self, path, tap=None):
         if not os.path.exists(path):
             os.mkfifo(path)
         self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        self.tap, self.t_down = tap, {}          # tap 초 뒤 뗀 셈 (--on-release 시험용)
 
     def reset(self):
         pass
@@ -128,18 +129,35 @@ class Fifo:
             for c in os.read(self.fd, 64).decode(errors="ignore"):
                 if c in "1234":
                     edge(down, int(c), True)
+                    self.t_down[int(c)] = time.monotonic()
+        if self.tap is not None:
+            for b, t in list(self.t_down.items()):
+                if time.monotonic() - t >= self.tap:
+                    edge(down, b, False)
+                    del self.t_down[b]
 
 
-def wait_press(src, hold_for):
-    """hold_for(번호) 초 넘게 누른 버튼 (번호, 누른 순간). 기다리는 사이 임무 상태가 바뀔 수 있어 필요한 시간은 눌린 순간에 정함."""
+def wait_press(src, hold_for, on_release=False, max_hold=3.0):
+    """on_release 면 눌렀다 뗄 때 받음: 누른 시간이 hold_for(번호)~max_hold 초일 때만 (0 에 붙은 핀·빠진 선은 안 받음). 돌려줌 (번호, 뗀 순간).
+    아니면 hold_for(번호) 초 넘게 누른 버튼 (번호, 누른 순간). 기다리는 사이 임무 상태가 바뀔 수 있어 필요한 시간은 눌린 순간에 정함."""
     down, need = {}, {}
     src.reset()
     while True:
+        before = dict(down)
         src.poll(down)
         now = time.monotonic()
         for b, t0 in down.items():
             if (b, t0) not in need:
                 need[(b, t0)] = hold_for(b)
+        for b, t0 in before.items():
+            if down.get(b) != t0:                # 뗌
+                held = now - t0
+                if on_release and need[(b, t0)] <= held <= max_hold:
+                    return b, now
+                log("%d번 %.2f 초 누름: 무시 (%.2f~%.1f 초만 받음)" % (b, held, need[(b, t0)], max_hold) if on_release else "%d번 %.2f 초 누름: 짧아서 무시" % (b, held))
+        if on_release:
+            continue
+        for b, t0 in down.items():
             if now - t0 >= need[(b, t0)]:
                 return b, t0
 
@@ -186,7 +204,7 @@ def prepare(m, side):
     t0 = time.monotonic()
     if subprocess.call([W + "/field_arm.sh", str(m), side]) == 0:
         log("%d임무 준비 끝 (%.1f 초)" % (m, time.monotonic() - t0))
-        sign()
+        sign(m)                              # 1임무 한 번, 2임무 두 번 (실패는 세 번)
     else:
         log("%d임무 준비 실패 (%.1f 초)" % (m, time.monotonic() - t0))
         sign(3)
@@ -228,7 +246,7 @@ def press(b, st, t_press, a):
     elif b == 3:
         if st == 2:
             log("2임무는 이미 준비됨: 그리퍼로 알림")
-            sign()
+            sign(2)
         else:
             if st != 0:
                 log("켜져 있는 임무 끔 (상태 %s)" % st)
@@ -260,15 +278,17 @@ def learn(paths):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--side", default="auto", choices=["auto", "right", "left"], help="1임무 출발 칸 옆 바깥벽. auto = 출발 직전 놓인 자세를 라이다로 판단")
-    ap.add_argument("--hold", type=float, default=0.08, help="이보다 짧은 입력은 스침으로 무시 [s]")
-    ap.add_argument("--hold-long", type=float, default=1.0, help="켜진 임무를 끄는 누름 (3번, 2임무 준비 상태의 1번) [s]")
+    ap.add_argument("--hold", type=float, default=0.05, help="이보다 짧은 입력은 스침으로 무시 [s]")
+    ap.add_argument("--hold-long", type=float, default=0.05, help="켜진 임무를 끄는 누름 (3번, 2임무 준비 상태의 1번) [s]. 11-03 사용자 결정으로 다른 버튼과 같게")
     ap.add_argument("--delay1", type=float, default=1.0, help="2번 누르고 1임무 출발까지 [s]")
     ap.add_argument("--delay2", type=float, default=0.0, help="4번 누르고 2임무 출발까지 [s]")
     ap.add_argument("--recheck-lead", type=float, default=0.5, help="1임무 출발 이만큼 전에 지금 자리로 원점 다시 잡기 [s]")
     ap.add_argument("--dev", nargs="*", default=None, help="읽을 장치 (기본: /dev/input/event* 전부)")
-    ap.add_argument("--gpio", nargs=4, type=int, default=None, metavar="핀", help="USB 대신 Jetson 40핀 BOARD 번호 1~4번 순서 (빨 흰 노 파 = 7 29 31 32)")
+    ap.add_argument("--gpio", nargs=4, type=int, default=None, metavar="핀", help="USB 대신 Jetson 40핀 BOARD 번호 1~4번 순서 (빨 흰 노 파 = 7 29 31 22)")
     ap.add_argument("--gpio-low", action="store_true", help="눌림 = LOW 배선 (버튼 → GND + 외부 풀업). 없으면 눌림 = HIGH")
     ap.add_argument("--fifo", default=None, help="버튼 없이 시험: 이 파일에 쓴 숫자를 누름으로 봄")
+    ap.add_argument("--on-release", action="store_true", help="눌렀다 뗄 때 실행 (누른 시간 --hold~--max-hold 초만). 없으면 누르고 --hold 초 지나면 바로")
+    ap.add_argument("--max-hold", type=float, default=3.0, help="--on-release: 이보다 오래 눌린 건 붙은 핀으로 보고 무시 [s]")
     ap.add_argument("--watch", action="store_true", help="눌러 보기만")
     ap.add_argument("--learn", action="store_true", help="USB 버튼을 1~4번 순서로 눌러 저장")
     a = ap.parse_args()
@@ -277,11 +297,11 @@ def main():
     keys = dict(KEYS)
     if os.path.exists(KEYMAP):
         keys = {int(k): v for k, v in json.load(open(KEYMAP)).items()}
-    src = Fifo(a.fifo) if a.fifo else Gpio(a.gpio, a.gpio_low) if a.gpio else Evdev(a.dev, keys)
-    log("버튼 대기: %s, 지금 상태 %s" % (a.fifo or ("GPIO %s" % a.gpio if a.gpio else "USB 코드 %s" % sorted(keys)), state()))
+    src = Fifo(a.fifo, tap=max(a.hold, a.hold_long) + 0.05 if a.on_release else None) if a.fifo else Gpio(a.gpio, a.gpio_low) if a.gpio else Evdev(a.dev, keys)
+    log("버튼 대기: %s, %s, 지금 상태 %s" % (a.fifo or ("GPIO %s" % a.gpio if a.gpio else "USB 코드 %s" % sorted(keys)), "뗄 때 실행" if a.on_release else "누르면 실행", state()))
     hold_for = lambda b: a.hold_long if b == 3 or (b == 1 and state() == 2) else a.hold
     while True:
-        b, t_press = wait_press(src, hold_for)
+        b, t_press = wait_press(src, hold_for, a.on_release, a.max_hold)
         if a.watch:
             log("%d번 눌림" % b)
             continue

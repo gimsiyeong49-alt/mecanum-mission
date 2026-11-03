@@ -79,6 +79,36 @@ def mask_small(img):
     return c[0] if c else None
 
 
+class EntryWatch:
+    """들어가는 동안 큐브를 두 카메라에서 지켜봄. 그리퍼로 들어가는 큐브는 화면 아래끝에 닿은 뒤 사라짐 (잡기 영상 68 개 중 67 개, 예외 1 개는 실제로 놓친 판, 11-03).
+    아래끝에 안 닿고 사라지면 누가 치웠거나 옆으로 밀린 것. 평소 조명 단계로 큐브를 한 번도 못 봤으면 판단하지 않음."""
+    BIG = 2000      # 절반 크기 사진에서 이만큼 넘는 빨강만 큐브
+
+    def __init__(self):
+        self.seen, self.below, self.now = [False, False], [False, False], [False, False]
+        self.lost_t = None
+
+    def feed(self, imgs, t):
+        for k, img in enumerate(imgs):
+            c = mask_candidates(img, small=True)
+            m = c[0] if c else None
+            self.now[k] = m is not None and np.count_nonzero(m) > self.BIG
+            if self.now[k]:
+                self.seen[k] = True
+                self.below[k] = int(np.nonzero(m)[0].max()) >= m.shape[0] - 2
+        self.lost_t = None if any(self.now) else (self.lost_t if self.lost_t is not None else t)
+
+    def vanished(self, t, hold=0.3):
+        """아래끝에 닿은 적 없이 hold 초 넘게 사라짐 = 그리퍼로 안 들어옴."""
+        return any(self.seen) and not any(self.below) and self.lost_t is not None and t - self.lost_t >= hold
+
+    def went_in(self):
+        """True = 어느 카메라든 아래끝에 닿은 뒤 사라짐, False = 아님, None = 큐브를 못 봐서 모름. 영상 85 개: 쥔 81 개 전부 True, 놓친 4 개 전부 False, 사라짐 오경보 0."""
+        if not any(self.seen):
+            return None
+        return any(self.below) and not any(self.now)
+
+
 def _fit(xs, ys):  # 강건한 직선 맞추기 → (점, 방향)
     P = np.column_stack([xs, ys]).astype(np.float32)
     if len(P) < 5: return None

@@ -7,6 +7,7 @@
 # 끄기: ~/mecanum_slam_ws/mission2/stop.sh (그리퍼는 그대로) · 진행: tail -f /tmp/mission_screen.log
 # go 뒤의 인수는 노드로 넘어감: 예) --start-mode turn45 --no-wall-fix
 source ~/mecanum_slam_ws/field_common.sh
+LIDAR_WANT=Sensitivity     # 2임무는 벽에 바짝 붙지 않고 먼 벽을 봄
 CMD=${1:-}; shift
 station_up() { python3 -c "import urllib.request as u; u.urlopen('http://127.0.0.1:8090/status', timeout=2)" 2>/dev/null; }
 ready() {
@@ -22,7 +23,7 @@ case "$CMD" in
     if screen -ls | grep -q '\.mission[[:space:]]'; then echo "이미 임무 화면이 있음: ~/mecanum_slam_ws/mission2/stop.sh 뒤 다시"; exit 1; fi
     # 기반이 꺼져 있어도 거부하지 않음 (경기 중이므로): 스테이션을 켜고 기반을 기다린 뒤 바로 출발. 전부 로봇 안에서 하므로 접속이 끊겨도 진행됨
     station_up || $W/start_station.sh
-    screen -dmS mission bash -c "source $W/field_common.sh; ensure_base; $W/mission2/run_go.sh $* 2>&1 | tee /tmp/mission_screen.log"
+    screen -dmS mission bash -c "source $W/field_common.sh; LIDAR_WANT=Sensitivity; ensure_base; $W/mission2/run_go.sh $* 2>&1 | tee /tmp/mission_screen.log"
     sleep 0.5
     screen -ls | grep -q '\.mission[[:space:]]' && echo "출발함. 기록: ~/mecanum_slam_ws/mission2/logs/" || { echo "시작 실패: /tmp/mission_screen.log"; exit 1; };;
   *) echo "사용: field_battle.sh ready | dry | go"; exit 1;;
